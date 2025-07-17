@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <title>🎧 Receptor de Audio</title>
+  <title>🎧 Receptor Global</title>
   <style>
     body {
       font-family: 'Segoe UI', sans-serif;
@@ -37,13 +37,18 @@
       width: 90%;
       max-width: 400px;
     }
+    #status {
+      margin-top: 20px;
+      color: #00ffaa;
+    }
   </style>
 </head>
 <body>
-  <h1>🎧 Receptor de Audio</h1>
+  <h1>🎧 Receptor Global</h1>
   <button id="join">Unirse a la Transmisión</button>
-  <button id="leave" disabled>Salir de la Transmisión</button>
+  <button id="leave" disabled>Salir</button>
   <audio id="remoteAudio" autoplay controls></audio>
+  <div id="status">Estado: Desconectado</div>
 
   <!-- Firebase -->
   <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
@@ -51,14 +56,14 @@
 
   <script>
     const firebaseConfig = {
-  apiKey: "AIzaSyCiMf4eQTlB2xsdqGvOEu-1Kj5CLuAWZKs",
-  authDomain: "hora-24.firebaseapp.com",
-  databaseURL: "https://hora-24-default-rtdb.firebaseio.com",
-  projectId: "hora-24",
-  storageBucket: "hora-24.firebasestorage.app",
-  messagingSenderId: "160951620670",
-  appId: "1:160951620670:web:e89c704ed4b7980ce82d6f"
-};
+      apiKey: "AIzaSyCiMf4eQTlB2xsdqGvOEu-1Kj5CLuAWZKs",
+      authDomain: "hora-24.firebaseapp.com",
+      databaseURL: "https://hora-24-default-rtdb.firebaseio.com",
+      projectId: "hora-24",
+      storageBucket: "hora-24.firebasestorage.app",
+      messagingSenderId: "160951620670",
+      appId: "1:160951620670:web:e89c704ed4b7980ce82d6f"
+    };
 
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
@@ -66,54 +71,116 @@
 
     let pc;
     let remoteStream;
+    let candidatesListener;
+    let retryCount = 0;
+    const maxRetries = 3;
 
-    document.getElementById("join").onclick = async () => {
-      const offerSnapshot = await roomRef.child("offer").get();
-      const offer = offerSnapshot.val();
-      if (!offer) {
-        alert("❌ No hay una transmisión activa aún.");
-        return;
-      }
-
-      pc = new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-      });
-
-      pc.onicecandidate = e => {
-        if (e.candidate) {
-          roomRef.child("calleeCandidates").push().set(e.candidate.toJSON());
-        }
-      };
-
-      pc.ontrack = e => {
-        remoteStream = e.streams[0];
-        document.getElementById("remoteAudio").srcObject = remoteStream;
-      };
-
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await roomRef.child("answer").set(pc.localDescription.toJSON());
-
-      roomRef.child("callerCandidates").on("child_added", snapshot => {
-        const data = snapshot.val();
-        pc.addIceCandidate(new RTCIceCandidate(data));
-      });
-
-      document.getElementById("join").disabled = true;
-      document.getElementById("leave").disabled = false;
-      alert("🔊 Conectado correctamente.");
+    const updateStatus = (message, color = "#00ffaa") => {
+      document.getElementById("status").textContent = `Estado: ${message}`;
+      document.getElementById("status").style.color = color;
     };
 
-    document.getElementById("leave").onclick = () => {
-      if (pc) pc.close();
+    const cleanUp = async () => {
+      if (candidatesListener) roomRef.child("callerCandidates").off("child_added", candidatesListener);
+      
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      
       if (remoteStream) {
         remoteStream.getTracks().forEach(t => t.stop());
+        remoteStream = null;
       }
+      
       document.getElementById("remoteAudio").srcObject = null;
-      document.getElementById("join").disabled = false;
-      document.getElementById("leave").disabled = true;
-      alert("🚫 Saliste de la transmisión.");
+    };
+
+    document.getElementById("join").onclick = async () => {
+      try {
+        updateStatus("Conectando...", "#FFFF00");
+        
+        const offerSnapshot = await roomRef.child("offer").get();
+        const offer = offerSnapshot.val();
+        
+        if (!offer) {
+          if (retryCount < maxRetries) {
+            retryCount++;
+            setTimeout(() => {
+              document.getElementById("join").click();
+            }, 2000);
+            updateStatus(`Reintentando (${retryCount}/${maxRetries})...`, "#FFFF00");
+            return;
+          } else {
+            updateStatus("No hay transmisión activa", "#FF0000");
+            return;
+          }
+        }
+
+        await cleanUp();
+        retryCount = 0;
+
+        pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: "stun:stun2.l.google.com:19302" }
+          ]
+        });
+
+        pc.oniceconnectionstatechange = () => {
+          console.log("ICE Connection State:", pc.iceConnectionState);
+          if (pc.iceConnectionState === "failed") {
+            updateStatus("Error de conexión ICE", "#FF0000");
+          }
+        };
+
+        pc.onicecandidate = e => {
+          if (e.candidate) {
+            roomRef.child("calleeCandidates").push().set(e.candidate.toJSON());
+          }
+        };
+
+        pc.ontrack = e => {
+          remoteStream = e.streams[0];
+          document.getElementById("remoteAudio").srcObject = remoteStream;
+          updateStatus("Conectado", "#00FF00");
+        };
+
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await roomRef.child("answer").set(pc.localDescription.toJSON());
+
+        candidatesListener = roomRef.child("callerCandidates").on("child_added", snapshot => {
+          const data = snapshot.val();
+          if (pc.iceConnectionState !== "closed") {
+            pc.addIceCandidate(new RTCIceCandidate(data)).catch(e => console.error("Error adding ICE candidate:", e));
+          }
+        });
+
+        document.getElementById("join").disabled = true;
+        document.getElementById("leave").disabled = false;
+      } catch (error) {
+        updateStatus(`Error: ${error.message}`, "#FF0000");
+        console.error("Error al unirse:", error);
+        await cleanUp();
+      }
+    };
+
+    document.getElementById("leave").onclick = async () => {
+      try {
+        updateStatus("Desconectando...", "#FFFF00");
+        await cleanUp();
+        await roomRef.child("calleeCandidates").remove();
+        
+        document.getElementById("join").disabled = false;
+        document.getElementById("leave").disabled = true;
+        updateStatus("Desconectado", "#00ffaa");
+      } catch (error) {
+        updateStatus(`Error al salir: ${error.message}`, "#FF0000");
+        console.error("Error al salir:", error);
+      }
     };
   </script>
 </body>
