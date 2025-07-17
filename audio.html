@@ -1,0 +1,132 @@
+<!-- receptor.html -->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>🎧 Receptor Global</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #121212;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }
+    button {
+      padding: 15px 30px;
+      margin: 10px;
+      border: none;
+      border-radius: 10px;
+      font-size: 18px;
+      cursor: pointer;
+      box-shadow: 0 5px 15px rgba(255, 255, 255, 0.1);
+    }
+    #join { background: #ff512f; color: white; }
+    #leave { background: #666; color: white; }
+    #status { margin-top: 20px; color: #00ffaa; }
+    audio { margin-top: 30px; width: 90%; max-width: 400px; }
+  </style>
+</head>
+<body>
+  <h1>🎧 Receptor Global</h1>
+  <button id="join">Unirse a la Transmisión</button>
+  <button id="leave" disabled>Salir</button>
+  <audio id="remoteAudio" autoplay controls></audio>
+  <div id="status">Estado: Desconectado</div>
+
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyCiMf4eQTlB2xsdqGvOEu-1Kj5CLuAWZKs",
+      authDomain: "hora-24.firebaseapp.com",
+      databaseURL: "https://hora-24-default-rtdb.firebaseio.com",
+      projectId: "hora-24",
+      storageBucket: "hora-24.appspot.com",
+      messagingSenderId: "160951620670",
+      appId: "1:160951620670:web:e89c704ed4b7980ce82d6f"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const roomRef = db.ref("audio-room");
+
+    let pc, localStream, candidatesListener;
+
+    const updateStatus = (text, color = "#00ffaa") => {
+      document.getElementById("status").textContent = `Estado: ${text}`;
+      document.getElementById("status").style.color = color;
+    };
+
+    const cleanUp = async () => {
+      if (candidatesListener) roomRef.child("callerCandidates").off("child_added", candidatesListener);
+      if (pc) { pc.close(); pc = null; }
+      if (localStream) {
+        localStream.getTracks().forEach(t => t.stop());
+        localStream = null;
+      }
+      document.getElementById("remoteAudio").srcObject = null;
+    };
+
+    document.getElementById("join").onclick = async () => {
+      try {
+        updateStatus("Conectando...", "#FFFF00");
+
+        const offerSnapshot = await roomRef.child("offer").get();
+        const offer = offerSnapshot.val();
+
+        if (!offer) {
+          updateStatus("No hay transmisión activa", "#FF0000");
+          return;
+        }
+
+        pc = new RTCPeerConnection({
+          iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+        });
+
+        pc.onicecandidate = e => {
+          if (e.candidate) roomRef.child("calleeCandidates").push(e.candidate.toJSON());
+        };
+
+        pc.ontrack = e => {
+          document.getElementById("remoteAudio").srcObject = e.streams[0];
+        };
+
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await roomRef.child("answer").set(pc.localDescription.toJSON());
+
+        candidatesListener = roomRef.child("callerCandidates").on("child_added", snapshot => {
+          const candidate = snapshot.val();
+          pc.addIceCandidate(new RTCIceCandidate(candidate));
+        });
+
+        document.getElementById("join").disabled = true;
+        document.getElementById("leave").disabled = false;
+        updateStatus("Conectado", "#00FF00");
+      } catch (err) {
+        console.error(err);
+        updateStatus(`Error: ${err.message}`, "#FF0000");
+      }
+    };
+
+    document.getElementById("leave").onclick = async () => {
+      updateStatus("Desconectando...", "#FFFF00");
+      await cleanUp();
+      await roomRef.child("calleeCandidates").remove();
+      document.getElementById("join").disabled = false;
+      document.getElementById("leave").disabled = true;
+      updateStatus("Desconectado", "#00ffaa");
+    };
+  </script>
+</body>
+</html>
