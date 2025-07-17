@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>🎧 Receptor de Audio</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #121212;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+    }
+    button {
+      padding: 15px 30px;
+      margin: 10px;
+      border: none;
+      border-radius: 10px;
+      font-size: 18px;
+      cursor: pointer;
+      box-shadow: 0 5px 15px rgba(255, 255, 255, 0.1);
+    }
+    #join {
+      background: #ff512f;
+      color: white;
+    }
+    #leave {
+      background: #666;
+      color: white;
+    }
+    audio {
+      margin-top: 30px;
+      width: 90%;
+      max-width: 400px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎧 Receptor de Audio</h1>
+  <button id="join">Unirse a la Transmisión</button>
+  <button id="leave" disabled>Salir de la Transmisión</button>
+  <audio id="remoteAudio" autoplay controls></audio>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+  <script>
+    const firebaseConfig = {
+  apiKey: "AIzaSyCiMf4eQTlB2xsdqGvOEu-1Kj5CLuAWZKs",
+  authDomain: "hora-24.firebaseapp.com",
+  databaseURL: "https://hora-24-default-rtdb.firebaseio.com",
+  projectId: "hora-24",
+  storageBucket: "hora-24.firebasestorage.app",
+  messagingSenderId: "160951620670",
+  appId: "1:160951620670:web:e89c704ed4b7980ce82d6f"
+};
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const roomRef = db.ref("audio-room");
+
+    let pc;
+    let remoteStream;
+
+    document.getElementById("join").onclick = async () => {
+      const offerSnapshot = await roomRef.child("offer").get();
+      const offer = offerSnapshot.val();
+      if (!offer) {
+        alert("❌ No hay una transmisión activa aún.");
+        return;
+      }
+
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      });
+
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          roomRef.child("calleeCandidates").push().set(e.candidate.toJSON());
+        }
+      };
+
+      pc.ontrack = e => {
+        remoteStream = e.streams[0];
+        document.getElementById("remoteAudio").srcObject = remoteStream;
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await roomRef.child("answer").set(pc.localDescription.toJSON());
+
+      roomRef.child("callerCandidates").on("child_added", snapshot => {
+        const data = snapshot.val();
+        pc.addIceCandidate(new RTCIceCandidate(data));
+      });
+
+      document.getElementById("join").disabled = true;
+      document.getElementById("leave").disabled = false;
+      alert("🔊 Conectado correctamente.");
+    };
+
+    document.getElementById("leave").onclick = () => {
+      if (pc) pc.close();
+      if (remoteStream) {
+        remoteStream.getTracks().forEach(t => t.stop());
+      }
+      document.getElementById("remoteAudio").srcObject = null;
+      document.getElementById("join").disabled = false;
+      document.getElementById("leave").disabled = true;
+      alert("🚫 Saliste de la transmisión.");
+    };
+  </script>
+</body>
+</html>
